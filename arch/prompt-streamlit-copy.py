@@ -4,18 +4,32 @@ import pandas as pd
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
 
+print(torch.backends.mps.is_available())  # Should return True
+
+
 # ─── Load model & tokenizer once ─────────────────────────────────────────────
+# @st.cache_resource
+# def load_model():
+#     tokenizer = AutoTokenizer.from_pretrained("defog/sqlcoder-7b-2")
+#     model = AutoModelForCausalLM.from_pretrained(
+#         "defog/sqlcoder-7b-2",
+#         device_map="auto",
+#         torch_dtype=torch.float16,
+#     )
+#     return tokenizer, model
+
+# tokenizer, model = load_model()
+
 @st.cache_resource
 def load_model():
     tokenizer = AutoTokenizer.from_pretrained("defog/sqlcoder-7b-2")
     model = AutoModelForCausalLM.from_pretrained(
         "defog/sqlcoder-7b-2",
-        device_map="auto",
-        torch_dtype=torch.float16,
+        torch_dtype=torch.float32,  # safer for MPS
     )
-    return tokenizer, model
-
-tokenizer, model = load_model()
+    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    model = model.to(device)
+    return tokenizer, model, device
 
 # ─── Prompt schema setup ───────────────────────────────────────────────────────
 schema_prompt = """### Task

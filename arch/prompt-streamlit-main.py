@@ -3,20 +3,27 @@ import sqlite3
 import pandas as pd
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import torch
-
 # ─── Load model & tokenizer once ─────────────────────────────────────────────
 @st.cache_resource
 def load_model():
+    # tokenizer stays the same
     tokenizer = AutoTokenizer.from_pretrained("defog/sqlcoder-7b-2")
+
+    # load in fp16 for speed, then move to cuda
     model = AutoModelForCausalLM.from_pretrained(
         "defog/sqlcoder-7b-2",
-        torch_dtype=torch.float32,  # safer for MPS
+        torch_dtype=torch.float16,
+        low_cpu_mem_usage=True       # trims CPU memory usage
     )
-    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
-    model = model.to(device)
-    return tokenizer, model, device
+    # send to GPU
+    model = model.to("cuda:0")
 
-tokenizer, model, device = load_model()
+    # enable cuDNN auto-tuner for optimal kernels
+    torch.backends.cudnn.benchmark = True
+
+    return tokenizer, model
+
+tokenizer, model = load_model()
 
 # ─── Prompt schema setup ───────────────────────────────────────────────────────
 schema_prompt = """### Task

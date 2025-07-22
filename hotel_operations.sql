@@ -1,8 +1,6 @@
-
 -- ========================
 -- 1. Create Tables
 -- ========================
-
 CREATE TABLE regions (
     region_id INT PRIMARY KEY,
     region_name VARCHAR(50)
@@ -44,14 +42,11 @@ CREATE TABLE bookings (
 -- ========================
 -- 2. Insert Data
 -- ========================
-
--- Regions
 INSERT INTO regions (region_id, region_name) VALUES
 (1, 'Asia'),
 (2, 'Europe'),
 (3, 'America');
 
--- Hotels
 INSERT INTO hotels (hotel_id, region_id, hotel_name, city) VALUES
 (101, 1, 'Marina Bay Sands', 'Singapore'),
 (102, 1, 'Hotel Tokyo Deluxe', 'Tokyo'),
@@ -60,7 +55,6 @@ INSERT INTO hotels (hotel_id, region_id, hotel_name, city) VALUES
 (301, 3, 'New York Tower Inn', 'New York'),
 (302, 3, 'Sunset LA Resort', 'Los Angeles');
 
--- Rooms
 INSERT INTO rooms (room_id, hotel_id, room_type, base_price) VALUES
 (1, 101, 'Deluxe', 200.00),
 (2, 101, 'Standard', 150.00),
@@ -68,14 +62,12 @@ INSERT INTO rooms (room_id, hotel_id, room_type, base_price) VALUES
 (4, 201, 'Standard', 140.00),
 (5, 301, 'Suite', 300.00);
 
--- Guests
 INSERT INTO guests (guest_id, guest_name, nationality) VALUES
 (5001, 'Alice Tan', 'Singaporean'),
 (5002, 'John Muller', 'German'),
 (5003, 'Pierre Dubois', 'French'),
 (5004, 'Mike Chen', 'American');
 
--- Bookings
 INSERT INTO bookings (booking_id, room_id, check_in, check_out, guest_id, total_price) VALUES
 (1001, 1, '2025-07-19', '2025-07-21', 5001, 400.00),
 (1002, 2, '2025-07-20', '2025-07-21', 5002, 150.00),

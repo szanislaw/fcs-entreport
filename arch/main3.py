@@ -15,9 +15,16 @@ def load_model_with_timing():
 
     tokenizer = AutoTokenizer.from_pretrained("defog/sqlcoder-7b-2")
 
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type='nf4',
+        bnb_4bit_compute_dtype=torch.float16
+    )
+
     model = AutoModelForCausalLM.from_pretrained(
         "defog/sqlcoder-7b-2",
-        torch_dtype=torch.float16,
+        quantization_config=bnb_config,
         device_map="auto"
     )
 
@@ -27,7 +34,7 @@ def load_model_with_timing():
 
 tokenizer, model, model_load_latency = load_model_with_timing()
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Model loaded on {device}")
+print(f"Model loaded on {device} in {model_load_latency:.2f} seconds")
 
 # ─── Initialize SQLite DB ────────────────────────────────────────────────────
 def initialize_database(conn, sql_file_path="hotel.sql"):
@@ -53,6 +60,7 @@ if not any(tbl in existing_tables for tbl in required_tables):
 
 # ─── PostgreSQL to SQLite cleaner ───────────────────────────────────────────
 import re
+
 def pg_to_sqlite(sql: str) -> str:
     """
     Convert PostgreSQL-style SQL into SQLite-compatible SQL.
@@ -60,40 +68,33 @@ def pg_to_sqlite(sql: str) -> str:
     """
     cleaned = sql
 
-    # ─── Remove schema prefixes like public.table ─────────────────────────────
+    # ─── Schema prefixes (e.g., public.table) ────────────────────────────────
     cleaned = re.sub(r'\bpublic\.', '', cleaned)
 
-    # ─── Boolean literals: TRUE → 1, FALSE → 0 ────────────────────────────────
+    # ─── Boolean literals ────────────────────────────────────────────────────
     cleaned = re.sub(r'\bTRUE\b', '1', cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r'\bFALSE\b', '0', cleaned, flags=re.IGNORECASE)
 
-    # ─── Type casts: column::type → column ────────────────────────────────────
+    # ─── Type casts (e.g., column::type) ─────────────────────────────────────
     cleaned = re.sub(r'::\s*\w+', '', cleaned)
 
-    # ─── ILIKE → LOWER(col) LIKE '%val%' ──────────────────────────────────────
-    cleaned = re.sub(
-        r"(?i)(\b\w+\b\.)?(\b\w+\b)\s+ILIKE\s+'(.*?)'",
-        lambda m: f"LOWER({m.group(1) or ''}{m.group(2)}) LIKE '%{m.group(3).lower()}%'",
-        cleaned
-    )
-
-    # ─── Replace timestamp declarations ───────────────────────────────────────
+    # ─── Replace timestamp type declarations ─────────────────────────────────
     cleaned = re.sub(r'timestamp(?:\(\d+\))?\s+without time zone', 'datetime', cleaned, flags=re.IGNORECASE)
 
-    # ─── SERIAL → INTEGER ─────────────────────────────────────────────────────
+    # ─── SERIAL → INTEGER (note: SQLite uses INTEGER PRIMARY KEY AUTOINCREMENT for actual auto-increment) ───
     cleaned = re.sub(r'\bSERIAL\b', 'INTEGER', cleaned, flags=re.IGNORECASE)
 
-    # ─── USING btree → removed (not needed in SQLite) ─────────────────────────
+    # ─── USING btree (irrelevant in SQLite) ──────────────────────────────────
     cleaned = re.sub(r'USING\s+btree', '', cleaned, flags=re.IGNORECASE)
 
-    # ─── PostgreSQL AVG(interval) → julianday difference ──────────────────────
+    # ─── Replace PostgreSQL-style interval math: AVG(end - start) → julianday math ──────
     cleaned = re.sub(
         r'\bAVG\s*\(\s*([a-zA-Z_][\w\.]*)\s*-\s*([a-zA-Z_][\w\.]*)\s*\)',
         r'ROUND(AVG((julianday(\1) - julianday(\2)) * 24 * 60), 2)',
         cleaned
     )
 
-    # ─── date_trunc('month', date) → strftime('%Y-%m-01', date) ───────────────
+    # ─── Replace date_trunc (not in SQLite) with strftime if pattern matches ───────────
     cleaned = re.sub(
         r"date_trunc\(\s*'month'\s*,\s*([a-zA-Z_][\w\.]*)\)",
         r"strftime('%Y-%m-01', \1)",
@@ -101,10 +102,10 @@ def pg_to_sqlite(sql: str) -> str:
         flags=re.IGNORECASE
     )
 
-    # ─── RETURNING clause → removed (not supported) ───────────────────────────
+    # ─── Optional: remove unsupported RETURNING clause ───────────────────────
     cleaned = re.sub(r'\bRETURNING\b.*?(;|\n|$)', '', cleaned, flags=re.IGNORECASE | re.DOTALL)
 
-    # ─── Strip trailing semicolon ─────────────────────────────────────────────
+    # ─── Strip trailing semicolon (sqlite3 doesn't require it in query string) ────────
     cleaned = cleaned.strip().rstrip(';')
 
     return cleaned
@@ -154,38 +155,8 @@ def nl_to_sql(question: str) -> str:
     )
     raw = tokenizer.decode(outputs[0], skip_special_tokens=True)
     sql = clean_sql(raw)
-    sql = postprocess_sql_for_dual_count(sql, question)  # ✅ NEW STEP
     sqlite_sql = pg_to_sqlite(sql)
     return sqlite_sql
-
-def postprocess_sql_for_dual_count(sql: str, question: str) -> str:
-    """
-    If the question implies both 'cleaned' and 'passed inspection',
-    rewrite the SQL to return both counts.
-    """
-    # Heuristic: look for queries that count rc.room_id with ri.passed = 1
-    if (
-        "COUNT" in sql.upper()
-        and "room_cleaning" in sql
-        and "room_inspections" in sql
-        and "passed" in sql
-        and re.search(r'LOWER\s*\(\s*s\.staff_name\s*\)\s+LIKE', sql, re.IGNORECASE)
-    ):
-        match_where = re.search(r'WHERE\s+(.+)', sql, re.IGNORECASE)
-        if match_where:
-            where_clause = match_where.group(1)
-            new_sql = f"""
-                SELECT
-                    COUNT(DISTINCT rc.room_id) AS total_rooms_cleaned,
-                    COUNT(DISTINCT CASE WHEN ri.passed = 1 THEN rc.room_id END) AS rooms_passed_inspection
-                FROM room_cleaning rc
-                JOIN staff s ON rc.staff_id = s.staff_id
-                LEFT JOIN room_inspections ri ON rc.cleaning_id = ri.cleaning_id
-                WHERE {where_clause.replace('AND ri.passed = 1', '')}
-            """
-            return new_sql.strip()
-    return sql
-
 
 # ─── Streamlit UI ────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Hotel Manager Dashboard", page_icon="🏨", layout="wide")
@@ -226,24 +197,18 @@ if user_query:
             st.success("Query executed successfully.")
             st.markdown("#### 📊 Result")
             if not df.empty:
-                # Special sentence output for room cleaning + inspection queries
-                cols = df.columns.str.lower().tolist()
-                if set(['total_rooms_cleaned', 'rooms_passed_inspection']).issubset(cols):
-                    cleaned = df.iloc[0][cols.index('total_rooms_cleaned')]
-                    passed = df.iloc[0][cols.index('rooms_passed_inspection')]
-                    st.metric(label="🧹 Room Cleaning Summary", value=f"{int(cleaned)} rooms cleaned, {int(passed)} rooms passed")
-                elif df.shape[0] == 1 and all(dtype in ['int64', 'float64'] for dtype in df.dtypes):
+                # If single-row numeric output
+                if df.shape[0] == 1 and all(dtype in ['int64', 'float64'] for dtype in df.dtypes):
                     for col in df.columns:
                         val = df[col].iloc[0]
                         st.metric(label=col.replace('_', ' ').title(), value=f"{val:.2f}" if isinstance(val, float) else val)
 
-
-                    # # Pie chart if it's a rate column (percentage)
-                    # if any("rate" in col.lower() or "percentage" in col.lower() for col in df.columns):
-                    #     rate_col = df.columns[0]
-                    #     rate_val = float(df[rate_col].iloc[0])
-                    #     st.markdown("#### 📊 Breakdown")
-                    #     st.pyplot(generate_pie_chart(rate_val, label=rate_col))
+                    # Pie chart if it's a rate column (percentage)
+                    if any("rate" in col.lower() or "percentage" in col.lower() for col in df.columns):
+                        rate_col = df.columns[0]
+                        rate_val = float(df[rate_col].iloc[0])
+                        st.markdown("#### 📊 Breakdown")
+                        st.pyplot(generate_pie_chart(rate_val, label=rate_col))
                 else:
                     st.success(f"✅ Returned {df.shape[0]} rows and {df.shape[1]} columns.")
 
@@ -400,7 +365,3 @@ for title, query in top_kpi_queries.items():
         
         
 # show me a chart comparing number of rooms cleaned by staff
-# How many training hours were done?
-# How many recleanings were there?
-# How many inspections were done?
-# What is the inspection pass rate?

@@ -4,7 +4,6 @@ import pandas as pd
 import torch
 import os
 import time
-import re
 
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 
@@ -17,7 +16,7 @@ def load_model_with_timing():
 
     model = AutoModelForCausalLM.from_pretrained(
         "defog/sqlcoder-7b-2",
-        torch_dtype=torch.float16,
+        torch_dtype=torch.float16,  # Use float16 for speed; omit for float32
         device_map="auto"
     )
 
@@ -47,69 +46,12 @@ required_tables = ["regions", "hotels", "rooms", "guests", "bookings", "payments
 existing_tables = set(row[0] for row in conn.execute(
     "SELECT name FROM sqlite_master WHERE type='table';").fetchall())
 
+# Only initialize if none of the required tables exist
 if not any(tbl in existing_tables for tbl in required_tables):
     initialize_database(conn, "hotel.sql")
 
 
-# ─── PostgreSQL to SQLite cleaner ───────────────────────────────────────────
-import re
-def pg_to_sqlite(sql: str) -> str:
-    """
-    Convert PostgreSQL-style SQL into SQLite-compatible SQL.
-    Handles common syntax and function mismatches.
-    """
-    cleaned = sql
-
-    # ─── Remove schema prefixes like public.table ─────────────────────────────
-    cleaned = re.sub(r'\bpublic\.', '', cleaned)
-
-    # ─── Boolean literals: TRUE → 1, FALSE → 0 ────────────────────────────────
-    cleaned = re.sub(r'\bTRUE\b', '1', cleaned, flags=re.IGNORECASE)
-    cleaned = re.sub(r'\bFALSE\b', '0', cleaned, flags=re.IGNORECASE)
-
-    # ─── Type casts: column::type → column ────────────────────────────────────
-    cleaned = re.sub(r'::\s*\w+', '', cleaned)
-
-    # ─── ILIKE → LOWER(col) LIKE '%val%' ──────────────────────────────────────
-    cleaned = re.sub(
-        r"(?i)(\b\w+\b\.)?(\b\w+\b)\s+ILIKE\s+'(.*?)'",
-        lambda m: f"LOWER({m.group(1) or ''}{m.group(2)}) LIKE '%{m.group(3).lower()}%'",
-        cleaned
-    )
-
-    # ─── Replace timestamp declarations ───────────────────────────────────────
-    cleaned = re.sub(r'timestamp(?:\(\d+\))?\s+without time zone', 'datetime', cleaned, flags=re.IGNORECASE)
-
-    # ─── SERIAL → INTEGER ─────────────────────────────────────────────────────
-    cleaned = re.sub(r'\bSERIAL\b', 'INTEGER', cleaned, flags=re.IGNORECASE)
-
-    # ─── USING btree → removed (not needed in SQLite) ─────────────────────────
-    cleaned = re.sub(r'USING\s+btree', '', cleaned, flags=re.IGNORECASE)
-
-    # ─── PostgreSQL AVG(interval) → julianday difference ──────────────────────
-    cleaned = re.sub(
-        r'\bAVG\s*\(\s*([a-zA-Z_][\w\.]*)\s*-\s*([a-zA-Z_][\w\.]*)\s*\)',
-        r'ROUND(AVG((julianday(\1) - julianday(\2)) * 24 * 60), 2)',
-        cleaned
-    )
-
-    # ─── date_trunc('month', date) → strftime('%Y-%m-01', date) ───────────────
-    cleaned = re.sub(
-        r"date_trunc\(\s*'month'\s*,\s*([a-zA-Z_][\w\.]*)\)",
-        r"strftime('%Y-%m-01', \1)",
-        cleaned,
-        flags=re.IGNORECASE
-    )
-
-    # ─── RETURNING clause → removed (not supported) ───────────────────────────
-    cleaned = re.sub(r'\bRETURNING\b.*?(;|\n|$)', '', cleaned, flags=re.IGNORECASE | re.DOTALL)
-
-    # ─── Strip trailing semicolon ─────────────────────────────────────────────
-    cleaned = cleaned.strip().rstrip(';')
-
-    return cleaned
-
-# ─── Generate schema dynamically ─────────────────────────────────────────────
+# ─── Generate schema dynamically from DB ─────────────────────────────────────
 def get_dynamic_schema_prompt(conn: sqlite3.Connection, question: str) -> str:
     schema = []
     cursor = conn.cursor()
@@ -153,39 +95,7 @@ def nl_to_sql(question: str) -> str:
         top_p=0.9
     )
     raw = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    sql = clean_sql(raw)
-    sql = postprocess_sql_for_dual_count(sql, question)  # ✅ NEW STEP
-    sqlite_sql = pg_to_sqlite(sql)
-    return sqlite_sql
-
-def postprocess_sql_for_dual_count(sql: str, question: str) -> str:
-    """
-    If the question implies both 'cleaned' and 'passed inspection',
-    rewrite the SQL to return both counts.
-    """
-    # Heuristic: look for queries that count rc.room_id with ri.passed = 1
-    if (
-        "COUNT" in sql.upper()
-        and "room_cleaning" in sql
-        and "room_inspections" in sql
-        and "passed" in sql
-        and re.search(r'LOWER\s*\(\s*s\.staff_name\s*\)\s+LIKE', sql, re.IGNORECASE)
-    ):
-        match_where = re.search(r'WHERE\s+(.+)', sql, re.IGNORECASE)
-        if match_where:
-            where_clause = match_where.group(1)
-            new_sql = f"""
-                SELECT
-                    COUNT(DISTINCT rc.room_id) AS total_rooms_cleaned,
-                    COUNT(DISTINCT CASE WHEN ri.passed = 1 THEN rc.room_id END) AS rooms_passed_inspection
-                FROM room_cleaning rc
-                JOIN staff s ON rc.staff_id = s.staff_id
-                LEFT JOIN room_inspections ri ON rc.cleaning_id = ri.cleaning_id
-                WHERE {where_clause.replace('AND ri.passed = 1', '')}
-            """
-            return new_sql.strip()
-    return sql
-
+    return clean_sql(raw)
 
 # ─── Streamlit UI ────────────────────────────────────────────────────────────
 st.set_page_config(page_title="Hotel Manager Dashboard", page_icon="🏨", layout="wide")
@@ -225,56 +135,17 @@ if user_query:
 
             st.success("Query executed successfully.")
             st.markdown("#### 📊 Result")
-            if not df.empty:
-                # Special sentence output for room cleaning + inspection queries
-                cols = df.columns.str.lower().tolist()
-                if set(['total_rooms_cleaned', 'rooms_passed_inspection']).issubset(cols):
-                    cleaned = df.iloc[0][cols.index('total_rooms_cleaned')]
-                    passed = df.iloc[0][cols.index('rooms_passed_inspection')]
-                    st.metric(label="🧹 Room Cleaning Summary", value=f"{int(cleaned)} rooms cleaned, {int(passed)} rooms passed")
-                elif df.shape[0] == 1 and all(dtype in ['int64', 'float64'] for dtype in df.dtypes):
-                    for col in df.columns:
-                        val = df[col].iloc[0]
-                        st.metric(label=col.replace('_', ' ').title(), value=f"{val:.2f}" if isinstance(val, float) else val)
-
-
-                    # # Pie chart if it's a rate column (percentage)
-                    # if any("rate" in col.lower() or "percentage" in col.lower() for col in df.columns):
-                    #     rate_col = df.columns[0]
-                    #     rate_val = float(df[rate_col].iloc[0])
-                    #     st.markdown("#### 📊 Breakdown")
-                    #     st.pyplot(generate_pie_chart(rate_val, label=rate_col))
-                else:
-                    st.success(f"✅ Returned {df.shape[0]} rows and {df.shape[1]} columns.")
-
-                    # Show bar chart if it looks like a ranking table
-                    if df.shape[0] <= 10 and df.shape[1] == 2 and df.dtypes[1] in ['int64', 'float64']:
-                        st.markdown("#### 📊 Bar Chart")
-                        st.bar_chart(df.set_index(df.columns[0]))
-
-                    # Show summary stats for numeric columns
-                    if any(dtype in ['int64', 'float64'] for dtype in df.dtypes):
-                        st.markdown("#### 📈 Summary Statistics")
-                        st.dataframe(df.describe())
-
-                    # Expandable full table
-                    with st.expander("🔍 View Full Data Table"):
-                        st.dataframe(df, use_container_width=True)
-
-                # Download option
-                csv = df.to_csv(index=False).encode("utf-8")
-                st.download_button("📥 Download Result as CSV", data=csv, file_name="query_result.csv", mime="text/csv")
-            else:
-                st.warning("No results found.")
-
+            st.dataframe(df, use_container_width=True)
             st.caption(f"⏱️ Query time: **{latency:.4f} seconds**")
         except Exception as sql_error:
             st.error("❌ Something went wrong while executing your query.")
             with st.expander("Show full error"):
                 st.code(str(sql_error), language="text")
 
+
     except Exception as gen_error:
         st.error(f"❌ Failed to generate a valid SQL query:\n{gen_error}")
+
 
 # ─── Housekeeping KPI Dashboard ──────────────────────────────────────────────
 st.markdown("---")
@@ -349,9 +220,10 @@ for idx, (title, query) in enumerate(kpi_queries.items()):
                 st.caption(f"⏱️ Loaded in {end - start:.4f} sec")
             else:
                 st.warning("No data available.")
+
         except Exception as e:
             st.error(f"Error loading KPI: {e}")
-
+            
 # ─── Top 3 Highlights ───────────────────────────────────────────────────────
 st.markdown("---")
 st.markdown("## 🏆 Top 3 Highlights")
@@ -396,11 +268,4 @@ for title, query in top_kpi_queries.items():
             st.info("No data available.")
     except Exception as e:
         st.error(f"Failed to load {title}: {e}")
-        
-        
-        
-# show me a chart comparing number of rooms cleaned by staff
-# How many training hours were done?
-# How many recleanings were there?
-# How many inspections were done?
-# What is the inspection pass rate?
+

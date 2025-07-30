@@ -4,7 +4,6 @@ import pandas as pd
 import torch
 import os
 import time
-import difflib
 import re
 
 from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
@@ -40,10 +39,8 @@ def initialize_database(conn, sql_file_path="hotel.sql"):
 db_path = "hotel.db"
 conn = sqlite3.connect(db_path)
 
-required_tables = ["regions", "hotels", "rooms", "guests", "bookings", "payments", "staff",
-                   "hotel_staff", "services", "room_services", "reviews",
-                   "shifts", "room_cleaning", "room_inspections", "lost_found",
-                   "guest_complaints", "training", "roster"]
+required_tables = ["regions", "hotels", "rooms", "guests", "bookings", "payments", "staff", "hotel_staff", "services", "room_services", "reviews", 
+                   "shifts", "room_cleaning", "room_inspections", "lost_found", "guest_complaints", "training", "roster"]
 
 existing_tables = set(row[0] for row in conn.execute(
     "SELECT name FROM sqlite_master WHERE type='table';").fetchall())
@@ -94,16 +91,14 @@ def get_dynamic_schema_prompt(conn: sqlite3.Connection, question: str) -> str:
         schema.append(f"CREATE TABLE {table} ({', '.join(col_defs)});")
     schema_text = "\n".join(schema)
     prompt = f"""### Task
-Generate a SQL query to answer the following question:
-{question}
+                Generate a SQL query to answer the following question:
+                {question}
 
-### Database Schema
-{schema_text}
+                ### Database Schema
+                {schema_text}
 
-### SQL
-"""
-    print(schema_text)  # Debugging: print the schema to console
-    print(prompt)  # Debugging: print the prompt to console
+                ### SQL
+                """
     return prompt
 
 def clean_sql(raw_sql: str) -> str:
@@ -139,31 +134,15 @@ def postprocess_sql_for_dual_count(sql: str, question: str) -> str:
 def nl_to_sql(question: str) -> str:
     prompt = get_dynamic_schema_prompt(conn, question)
     inputs = tokenizer(prompt, return_tensors="pt").to(device)
-    outputs = model.generate(
-        **inputs,
-        max_new_tokens=256,
-        do_sample=True,
-        temperature=0.7,
-        top_p=0.9
-    )
+    outputs = model.generate(**inputs, max_new_tokens=256, do_sample=True, temperature=0.7, top_p=0.9)
     raw = tokenizer.decode(outputs[0], skip_special_tokens=True)
     sql = clean_sql(raw)
     sql = postprocess_sql_for_dual_count(sql, question)
     sqlite_sql = pg_to_sqlite(sql)
     return sqlite_sql
 
-# ─── Logo and Title ───
-logo_path = "assets/fcslogo.svg"  # or .png if you prefer
-
-logo_col, title_col = st.columns([2, 10])
-with logo_col:
-    st.markdown("<div style='padding-top: 30px'></div>", unsafe_allow_html=True)
-    st.image(logo_path, width=120)
-
-with title_col:
-    st.title("FCS Enterprise Report Demo")
-    st.caption(f"Model loaded in **{model_load_latency:.2f} seconds**")
-
+# ─── Streamlit UI ───
+st.set_page_config(page_title="FCS Enterprise Report Demo", page_icon="🏨", layout="wide")
 st.markdown("""
     <style>
     .block-container {
@@ -178,56 +157,19 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# st.title(":hotel: FCS Enterprise Report Demo")
-# st.markdown(f"<div style='font-size:1.2rem; color: #6c757d;'>Model loaded in <b>{model_load_latency:.2f} seconds</b></div>", unsafe_allow_html=True)
-
+st.title(":hotel: FCS Enterprise Report Demo")
+st.caption(f"Model loaded in **{model_load_latency:.2f} seconds**")
 st.markdown("### :mag_right: What can I do for you today?")
-user_query = st.text_input("", placeholder="E.g. How many rooms have been cleaned?")
-
-# ─── NL → SQL Mapping ───
-def query_mapping(user_input: str) -> str | None:
-    mappings = {
-        "average number of rooms cleaned per shift": """
-            SELECT ROUND(AVG(rooms_cleaned), 2) AS avg_rooms_cleaned FROM shifts;
-        """,
-        "average cleaning time per room": """
-            SELECT ROUND(AVG((julianday(cleaning_end) - julianday(cleaning_start)) * 24 * 60), 2) AS avg_cleaning_time_min FROM room_cleaning;
-        """,
-        "room inspection pass rate": """
-            SELECT ROUND(SUM(CASE WHEN passed THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2) AS pass_rate FROM room_inspections;
-        """,
-        "how many rooms did donald anderson clean and pass the inspection": """
-            SELECT
-                COUNT(DISTINCT rc.room_id) AS total_rooms_cleaned,
-                COUNT(DISTINCT CASE WHEN ri.passed = 1 THEN rc.room_id END) AS rooms_passed_inspection
-            FROM room_cleaning rc
-            JOIN staff s ON rc.staff_id = s.staff_id
-            LEFT JOIN room_inspections ri ON rc.cleaning_id = ri.cleaning_id
-            WHERE LOWER(s.staff_name) LIKE '%donald anderson%'
-        """
-    }
-
-    # Lowercase keys and input
-    user_input_clean = user_input.lower().strip()
-    phrases = list(mappings.keys())
-
-    # Fuzzy match threshold
-    best_match = difflib.get_close_matches(user_input_clean, phrases, n=1, cutoff=0.7)
-    if best_match:
-        return mappings[best_match[0]].strip()
-
-    return None
-
-
+user_query = st.text_input("", placeholder="E.g. How many guests stayed in Paris?")
 
 if user_query:
     try:
-        sql = query_mapping(user_query)
-        if not sql:
-            sql = nl_to_sql(user_query)
-
+        sql = nl_to_sql(user_query)
         if not sql.strip():
             raise ValueError("The generated SQL query is empty.")
+
+        st.markdown("#### 🔧 Generated SQL Query")
+        st.code(sql, language="sql")
 
         try:
             start_time = time.time()
@@ -235,41 +177,36 @@ if user_query:
             end_time = time.time()
             latency = end_time - start_time
 
-            st.success("Query successful.")
-
-            # Begin result display
+            st.success("Query executed successfully.")
+            st.markdown("#### 📊 Result")
             if not df.empty:
-                st.markdown("#### 📊 Result")
-
-                # Check if it's a room cleaning + inspection summary
+                # Special sentence output for room cleaning + inspection queries
                 cols = df.columns.str.lower().tolist()
                 if set(['total_rooms_cleaned', 'rooms_passed_inspection']).issubset(cols):
                     cleaned = df.iloc[0][cols.index('total_rooms_cleaned')]
                     passed = df.iloc[0][cols.index('rooms_passed_inspection')]
                     st.metric(label="🧹 Room Cleaning Summary", value=f"{int(cleaned)} rooms cleaned, {int(passed)} rooms passed")
-
                 elif df.shape[0] == 1 and all(dtype in ['int64', 'float64'] for dtype in df.dtypes):
                     for col in df.columns:
                         val = df[col].iloc[0]
-                        label = col.replace('_', ' ').title()
+                        st.metric(label=col.replace('_', ' ').title(), value=f"{val:.2f}" if isinstance(val, float) else val)
 
-                        # Format as percentage if column name suggests it's a rate
-                        if "rate" in col.lower() or "percentage" in col.lower():
-                            display_val = f"{val * 100:.2f}%" if isinstance(val, (float, int)) else val
-                        else:
-                            display_val = f"{val:.2f}" if isinstance(val, float) else val
-
-                        st.metric(label=label, value=display_val)
-
+                    # # Pie chart if it's a rate column (percentage)
+                    # if any("rate" in col.lower() or "percentage" in col.lower() for col in df.columns):
+                    #     rate_col = df.columns[0]
+                    #     rate_val = float(df[rate_col].iloc[0])
+                    #     st.markdown("#### 📊 Breakdown")
+                    #     st.pyplot(generate_pie_chart(rate_val, label=rate_col))
+                    
                 else:
                     st.success(f"✅ Returned {df.shape[0]} rows and {df.shape[1]} columns.")
-
-                    # Bar chart if suitable
+                    
+                    # Show bar chart if it looks like a ranking table
                     if df.shape[0] <= 10 and df.shape[1] == 2 and df.dtypes[1] in ['int64', 'float64']:
                         st.markdown("#### 📊 Bar Chart")
                         st.bar_chart(df.set_index(df.columns[0]))
 
-                    # Summary statistics
+                    # Show summary stats for numeric columns
                     if any(dtype in ['int64', 'float64'] for dtype in df.dtypes):
                         st.markdown("#### 📈 Summary Statistics")
                         st.dataframe(df.describe())
@@ -278,20 +215,13 @@ if user_query:
                     with st.expander("🔍 View Full Data Table"):
                         st.dataframe(df, use_container_width=True)
 
-                # CSV download
+                # Download option
                 csv = df.to_csv(index=False).encode("utf-8")
                 st.download_button("📥 Download Result as CSV", data=csv, file_name="query_result.csv", mime="text/csv")
-
-                # 🔽 Moved to bottom
-                st.markdown("#### 🧠 Generated SQL Query")
-                st.code(sql, language="sql")
-
             else:
                 st.warning("No results found.")
 
-            # Show latency at bottom
-            st.markdown(f"<div style='font-size:1.2rem; color: #6c757d;'>⏱️ Query time: <b>{latency:.4f} seconds</b></div>", unsafe_allow_html=True)
-
+            st.caption(f"⏱️ Query time: **{latency:.4f} seconds**")
             
         except Exception as sql_error:
             st.error("❌ Something went wrong while executing your query.")
@@ -302,7 +232,6 @@ if user_query:
         st.error(f"❌ Failed to generate a valid SQL query:\n{gen_error}")
 
 # ─── Housekeeping KPI Dashboard ──────────────────────────────────────────────
-
 # Optional CSS to help center the button more accurately
 st.markdown("""
     <style>
@@ -401,3 +330,50 @@ if st.session_state.show_kpis:
                     st.warning("No data available.")
             except Exception as e:
                 st.error(f"Error loading KPI: {e}")
+
+
+
+# # ─── Top 3 Highlights ───────────────────────────────────────────────────────
+# st.markdown("---")
+# st.markdown("## 🏆 Top 3 Highlights")
+
+# top_kpi_queries = {
+#     "🥇 Top 3 Staff by Rooms Cleaned": """
+#         SELECT s.staff_name, SUM(sh.rooms_cleaned) AS total_cleaned
+#         FROM shifts sh
+#         JOIN staff s ON sh.staff_id = s.staff_id
+#         GROUP BY sh.staff_id
+#         ORDER BY total_cleaned DESC
+#         LIMIT 3;
+#     """,
+#     "🧽 Top 3 Rooms with Most Re-cleans": """
+#         SELECT rc.room_id, COUNT(*) AS re_cleans
+#         FROM room_cleaning rc
+#         WHERE rc.re_clean_required = 1
+#         GROUP BY rc.room_id
+#         ORDER BY re_cleans DESC
+#         LIMIT 3;
+#     """,
+#     "😠 Rooms with Most Complaints": """
+#         SELECT gc.room_id, COUNT(*) AS complaints
+#         FROM guest_complaints gc
+#         GROUP BY gc.room_id
+#         ORDER BY complaints DESC
+#         LIMIT 3;
+#     """
+# }
+
+# for title, query in top_kpi_queries.items():
+#     st.markdown(f"### {title}")
+#     try:
+#         df = pd.read_sql(query, conn)
+#         if not df.empty:
+#             for idx, row in df.iterrows():
+#                 rank = idx + 1
+#                 label = f"{rank}. {row.iloc[0]}"
+#                 value = row.iloc[1]
+#                 st.metric(label=label, value=value)
+#         else:
+#             st.info("No data available.")
+#     except Exception as e:
+#         st.error(f"Failed to load {title}: {e}")

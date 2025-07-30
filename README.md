@@ -102,6 +102,56 @@ The user describes their reporting need in plain language. The app dynamically i
 
 For more details, see the source code for [`mainui.py`](https://github.com/szanislaw/fcs-entreport/blob/main/mainui.py).
 
+---
+## Multi-User Support via Dynamic Schema Injection
+
+A key feature of this engine is its **dynamic schema injection** capability, which is fundamental for multi-user scenarios:
+
+### How Dynamic Schema Injection Enables Multi-User Support
+
+- **Per-Session Database Context:**  
+  Each time a user submits a natural language query, the application dynamically inspects the current state of the SQLite database. It retrieves the live schema (tables and columns) at that moment.
+
+- **Prompt Customization:**  
+  The system then generates a prompt for the SQLCoder LLM that includes *the exact database schema as it exists for that user/session*—not a static or hard-coded schema. This means the LLM is always given the most accurate context in which to generate SQL queries.
+
+- **Concurrency and Isolation:**  
+  Because the schema is injected into the prompt per request, different users (or sessions) can interact with different database states (e.g., if using separate databases per user or session, or if the schema is modified at runtime).  
+  - If deployed in a multi-tenant setup (one database per user or organization), each user’s queries are generated and executed in the context of their own schema.
+  - If the schema changes (e.g., new tables/columns added), the prompt immediately reflects those changes.
+
+- **Example Flow:**
+  1. User A and User B each access the application (potentially with different databases or after schema modifications).
+  2. When User A submits a question, the application queries their database schema and injects it into the LLM prompt.
+  3. When User B submits a question, the same process occurs independently for their schema.
+  4. The LLM generates SQL that is always valid for the specific schema being queried.
+
+### Why This Matters
+
+- **No Cross-User Leakage:**  
+  Queries for one user are never generated using another user’s schema, preventing confusion and potential data/security issues.
+- **Extremely Flexible:**  
+  The app supports rapidly evolving schemas, multi-tenant architectures, and even runtime schema modifications without any code changes or model retraining.
+- **Scalable:**  
+  This approach allows the engine to be used for SaaS products, internal tools, or any scenario where users may have unique or changing database structures.
+
+### Technical Note
+
+The dynamic schema injection is handled by the function:
+
+```python
+def get_dynamic_schema_prompt(conn: sqlite3.Connection, question: str) -> str:
+    # Inspects the live database schema, formats it, and injects it into the prompt
+```
+
+This ensures every LLM prompt is tailored to the *actual* database structure at query time.
+
+---
+
+In summary: **Multiple users can use this engine simultaneously and safely, thanks to dynamic schema injection that personalizes every query to each user’s live database context.**
+
+---
+
 ## File Structure
 
 ```

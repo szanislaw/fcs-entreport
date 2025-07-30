@@ -1,0 +1,12 @@
+streamlit
+pandas
+torch
+transformers
+bitsandbytes; platform_system == "Linux"
+accelerate
+scikit-learn
+scipy
+numpy
+matplotlib
+seaborn
+tqdm

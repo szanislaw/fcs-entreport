@@ -389,8 +389,8 @@ for title, query in top_kpi_queries.items():
         if not df.empty:
             for idx, row in df.iterrows():
                 rank = idx + 1
-                label = f"{rank}. {row[0]}"
-                value = row[1]
+                label = f"{rank}. {row.iloc[0]}"
+                value = row.iloc[1]
                 st.metric(label=label, value=value)
         else:
             st.info("No data available.")

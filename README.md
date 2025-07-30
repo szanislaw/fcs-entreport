@@ -1,10 +1,10 @@
-# FCS Entreport
+# FCS EntReport
 
 Enterprise Reporting using Streamlit
 
 ## Overview
 
-FCS Entreport is an enterprise-level reporting application that leverages [Streamlit](https://streamlit.io/) for interactive dashboards and integrates AI-powered SQL generation via large language models. The application is designed to provide flexible, natural language-driven business intelligence and reporting, primarily for hotel management scenarios.
+FCS EntReport is an enterprise-level reporting application that leverages [Streamlit](https://streamlit.io/) for interactive dashboards and integrates AI-powered SQL generation via large language models. The application is designed to provide flexible, natural language-driven business intelligence and reporting, primarily for hotel management scenarios.
 
 The main entry point for the application is [`mainui.py`](mainui.py).
 

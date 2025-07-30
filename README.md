@@ -70,7 +70,7 @@ The workflow in `mainui.py` can be broken down into the following steps:
 - The output is post-processed (`clean_sql`) to extract the SQL code from the generated text, ensuring only valid SQL is kept.
 - The result is optionally further processed (e.g., custom logic for special cases like dual room cleaning/inspection counts).
 
-### 5. SQL Dialect Conversion
+### 5. SQL Dialect Conversion (Will be removed when implemented into PostgreSQL)
 
 - The generated SQL (which may use PostgreSQL-specific syntax) is converted to SQLite-compatible SQL using `pg_to_sqlite`.
 - This function handles:

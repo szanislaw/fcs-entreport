@@ -35,7 +35,7 @@ The main entry point for the application is [`mainui.py`](mainui.py).
 
 4. **Streamlit Frontend**
    - Uses Streamlit widgets for user interaction (not fully shown in the snippet, but expected for report parameters, SQL input, model outputs, etc.).
-   - Likely enables users to input natural language questions, generates SQL with the LLM, executes them against the SQLite database, and displays results.
+   - Enables users to input natural language questions, generates SQL with the LLM, executes them against the SQLite database, and displays results.
 
 ## File Structure
 

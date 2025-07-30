@@ -18,24 +18,89 @@ The main entry point for the application is [`mainui.py`](mainui.py).
 
 ## How It Works
 
-`mainui.py` orchestrates the following:
+The workflow in `mainui.py` can be broken down into the following steps:
 
-1. **Model Initialization**
-   - Loads the `defog/sqlcoder-7b-2` LLM and tokenizer using HuggingFace Transformers.
-   - Model is loaded onto GPU (CUDA) if available, or CPU otherwise.
-   - Caching is used to avoid repeated model load times.
+### 1. Model & Tokenizer Initialization
 
-2. **Database Bootstrapping**
-   - Connects to `hotel.db` (SQLite).
-   - Checks for the presence of key tables (e.g., `guests`, `bookings`, `payments`).
-   - If missing, executes the SQL schema from `hotel.sql` to initialize the database.
+- The application loads the [defog/sqlcoder-7b-2](https://huggingface.co/defog/sqlcoder-7b-2) large language model (LLM) and tokenizer using HuggingFace's Transformers library.
+- The model is loaded on GPU (CUDA) if available, otherwise CPU, utilizing float16 precision for efficiency.
+- Loading is cached to avoid repeated initialization.
 
-3. **PostgreSQL to SQLite SQL Conversion**
-   - Contains a utility (`pg_to_sqlite`) to adapt SQL queries written in PostgreSQL dialect (e.g., with `ILIKE`, `TRUE`/`FALSE`, schema prefixes, typecasts) to SQLite syntax.
+### 2. Database Initialization
 
-4. **Streamlit Frontend**
-   - Uses Streamlit widgets for user interaction (not fully shown in the snippet, but expected for report parameters, SQL input, model outputs, etc.).
-   - Enables users to input natural language questions, generates SQL with the LLM, executes them against the SQLite database, and displays results.
+- The app connects to a local SQLite database (`hotel.db`).
+- It checks for the presence of required tables (e.g., guests, bookings, staff).
+- If any are missing, it runs the provided schema in `hotel.sql` to create and populate the database.
+
+### 3. User Query Handling & Prompt Formation
+
+- The user enters a natural-language question via a Streamlit text input.
+- The function `get_dynamic_schema_prompt(conn, question)` is called:
+  - It reads the current database schema: for each table, it gets columns and types.
+  - It builds a schema summary as a series of `CREATE TABLE ...` statements.
+  - It then forms a prompt like:
+
+    ```
+    ### Task
+    Generate a SQL query to answer the following question:
+    {user_question}
+
+    ### Database Schema
+    CREATE TABLE ...;
+    CREATE TABLE ...;
+    ...
+    ### SQL
+    ```
+
+### 4. SQL Query Generation with SQLCoder
+
+- The prompt is tokenized and fed into the SQLCoder LLM:
+
+  ```python
+  inputs = tokenizer(prompt, return_tensors="pt").to(device)
+  outputs = model.generate(
+      **inputs,
+      max_new_tokens=256,
+      do_sample=True,
+      temperature=0.7,
+      top_p=0.9
+  )
+  raw = tokenizer.decode(outputs[0], skip_special_tokens=True)
+  ```
+- The output is post-processed (`clean_sql`) to extract the SQL code from the generated text, ensuring only valid SQL is kept.
+- The result is optionally further processed (e.g., custom logic for special cases like dual room cleaning/inspection counts).
+
+### 5. SQL Dialect Conversion
+
+- The generated SQL (which may use PostgreSQL-specific syntax) is converted to SQLite-compatible SQL using `pg_to_sqlite`.
+- This function handles:
+  - Removing schema prefixes (e.g., `public.`)
+  - Converting boolean values (`TRUE`/`FALSE` to `1`/`0`)
+  - Removing typecasts
+  - Rewriting `ILIKE` to `LOWER(col) LIKE ...`
+  - Other necessary conversions for SQLite compatibility
+
+### 6. Query Execution & Display
+
+- The final SQL is executed against the SQLite database using Pandas:
+
+  ```python
+  df = pd.read_sql(sql, conn)
+  ```
+- If execution is successful and results are returned, they are displayed in the Streamlit UI (as tables, metrics, etc.).
+- Query execution latency is measured and displayed.
+- If errors occur (either in generation or execution), a friendly error is shown to the user.
+
+### 7. (Optional) Handcrafted Query Mapping
+
+- For specific well-known queries, a manual mapping (`query_mapping`) is checked before invoking the LLM. This is useful for optimizing common or ambiguous requests.
+
+---
+
+**Summary:**  
+The user describes their reporting need in plain language. The app dynamically inspects the current database schema, forms a detailed prompt for the LLM, generates SQL code, adapts it for SQLite, and runs it—showing the user the results, all through an interactive web interface.
+
+For more details, see the source code for [`mainui.py`](https://github.com/szanislaw/fcs-entreport/blob/main/mainui.py).
 
 ## File Structure
 

@@ -31,13 +31,13 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Model loaded on {device}")
 
 # ─── Initialize SQLite DB ───
-def initialize_database(conn, sql_file_path="hotel.sql"):
+def initialize_database(conn, sql_file_path="schemas/cleaning.sql"):
     with open(sql_file_path, "r") as f:
         sql_script = f.read()
     conn.executescript(sql_script)
     conn.commit()
 
-db_path = "hotel.db"
+db_path = "schemas/cleaning.db"
 conn = sqlite3.connect(db_path)
 
 required_tables = ["regions", "hotels", "rooms", "guests", "bookings", "payments", "staff",
@@ -49,7 +49,7 @@ existing_tables = set(row[0] for row in conn.execute(
     "SELECT name FROM sqlite_master WHERE type='table';").fetchall())
 
 if not any(tbl in existing_tables for tbl in required_tables):
-    initialize_database(conn, "hotel.sql")
+    initialize_database(conn, "schemas/cleaning.sql")
 
 # ─── PostgreSQL to SQLite cleaner ───
 def pg_to_sqlite(sql: str) -> str:
@@ -94,8 +94,29 @@ def get_dynamic_schema_prompt(conn: sqlite3.Connection, question: str) -> str:
         schema.append(f"CREATE TABLE {table} ({', '.join(col_defs)});")
     schema_text = "\n".join(schema)
     prompt = f"""### Task
-Generate a SQL query to answer the following question:
+Generate a SQL query to answer the following question according to the provided schema:
 {question}
+
+Do not use any window functions. Use only the columns and tables provided in the schema. 
+
+When generating the SQL query, ensure that:
+- The query is valid SQL syntax.
+- The query is optimized for SQLite.
+- The query does not contain any unnecessary complexity.
+- The query is directly executable in SQLite without modification.
+
+If the verbose of the question is not clear, return an empty result set.
+
+If the question is not answerable with the provided schema, return an empty result set. 
+If the question is not clear, return an empty result set. 
+If the query is not a question, return an empty result set. 
+If there are multiple tables, you may need to join them. 
+If the question is about a specific table, use only that table.
+If the question is about a specific column, use only that column.
+If the question is about a specific value, use only that value.
+If the question is about a specific date, use only that date.
+If the question is about a specific time range, use only that time range.
+If the question is about a specific person, use only that person.
 
 ### Database Schema
 {schema_text}

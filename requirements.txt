@@ -10,3 +10,5 @@ numpy
 matplotlib
 seaborn
 tqdm
+plotly
+plotly.express

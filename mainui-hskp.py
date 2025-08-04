@@ -123,9 +123,15 @@ def get_dynamic_schema_prompt(conn: sqlite3.Connection, question: str) -> str:
         col_defs = [f"{col[1]} {col[2]}" for col in columns]
         schema.append(f"CREATE TABLE {table} ({', '.join(col_defs)});")
     schema_text = "\n".join(schema)
-    prompt = f"""### Task
-Generate a SQL query to answer the following question according to the provided schema:
+    
+    prompt = f"""
+    
+### Task
+Generate a SQL query to answer the following question according to the provided schema below strictly:
 {question}
+
+### Database Schema
+{schema_text}
 
 Do not use any window functions. Use only the columns and tables provided in the schema. 
 
@@ -133,7 +139,6 @@ When generating the SQL query, ensure that:
 - The query is valid SQL syntax.
 - The query is optimized for SQLite.
 - The query does not contain any unnecessary complexity.
-- The query is directly executable in SQLite without modification.
 
 If the verbose of the question is not clear, return an empty result set.
 
@@ -147,9 +152,8 @@ If the question is about a specific value, use only that value.
 If the question is about a specific date, use only that date.
 If the question is about a specific time range, use only that time range.
 If the question is about a specific person, use only that person.
-
-### Database Schema
-{schema_text}
+If the question is about a specific location, use only that location.
+If the question is about a specific service, use only that service.
 
 ### SQL
 """
@@ -195,7 +199,8 @@ def nl_to_sql(question: str) -> str:
         max_new_tokens=256,
         do_sample=True,
         temperature=0.7,
-        top_p=0.9
+        top_p=0.9,
+        pad_token_id=tokenizer.pad_token_id if tokenizer.pad_token_id is not None else tokenizer.eos_token_id,                                  #can remove this line if pad_token_id is not needed
     )
     raw = tokenizer.decode(outputs[0], skip_special_tokens=True)
     sql = clean_sql(raw)
@@ -281,10 +286,24 @@ if user_query:
             raise ValueError("The generated SQL query is empty.")
 
         try:
-            start_time = time.time()
+            total_start_time = time.time()
+
+            # Time the SQL generation
+            sqlgen_start_time = time.time()
+            sql = query_mapping(user_query)
+            if not sql:
+                sql = nl_to_sql(user_query)
+            sqlgen_end_time = time.time()
+            sqlgen_latency = sqlgen_end_time - sqlgen_start_time
+
+            # Time the SQL execution
+            sqlexec_start_time = time.time()
             df = pd.read_sql(sql, conn)
-            end_time = time.time()
-            latency = end_time - start_time
+            sqlexec_end_time = time.time()
+            sqlexec_latency = sqlexec_end_time - sqlexec_start_time
+
+            total_latency = sqlexec_end_time - total_start_time
+
 
             st.success("Query successful.")
 
@@ -348,9 +367,8 @@ if user_query:
                 st.warning("No results found.")
 
             # Show latency at bottom
-            st.markdown(f"<div style='font-size:1.2rem; color: #6c757d;'>⏱️ Query time: <b>{latency:.4f} seconds</b></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='font-size:1.2rem; color: #6c757d;'>⏱️ Total time: <b>{total_latency:.4f} seconds</b> &nbsp; | &nbsp; 🧠 SQL generation: <b>{sqlgen_latency:.4f} sec</b> &nbsp; | &nbsp; 📦 SQL execution: <b>{sqlexec_latency:.4f} sec</b></div>", unsafe_allow_html=True)
 
-            
         except Exception as sql_error:
             st.error("❌ Something went wrong while executing your query.")
             with st.expander("Show full error"):
@@ -388,6 +406,11 @@ with col2:
 
 # ─── Conditional Display ───
 if st.session_state.show_kpis:
+    # Track KPI timing
+    kpi_total_start_time = time.time()
+    kpi_sqlgen_start_time = kpi_total_start_time
+    kpi_sqlgen_end_time = kpi_total_start_time  # assuming no SQL generation phase here
+
     col1, col2 = st.columns([1, 1], gap="large")  # Wider and spaced columns
 
     with col1:
@@ -604,6 +627,16 @@ if st.session_state.show_kpis:
             except Exception as e:
                 st.error(f"Error loading KPI: {e}")
                 
+
+    kpi_total_end_time = time.time()
+    kpi_sqlexec_latency = kpi_total_end_time - kpi_sqlgen_end_time
+    kpi_total_latency = kpi_total_end_time - kpi_total_start_time
+
+    st.markdown(
+        f"<div style='font-size:1.1rem; color: #6c757d;'>⏱️ Total time: <b>{kpi_total_latency:.4f} seconds</b> &nbsp; | &nbsp; 🧠 SQL generation: <b>{0.0000:.4f} sec</b> &nbsp; | &nbsp; 📦 SQL execution: <b>{kpi_sqlexec_latency:.4f} sec</b></div>",
+        unsafe_allow_html=True
+    )
+                    
 
     # KPI: Top 5 Staff by Number of Assignments
     # st.markdown("#### 👤 Top 5 Staff by Number of Assignments")

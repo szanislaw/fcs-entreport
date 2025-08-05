@@ -46,11 +46,19 @@ def load_model_with_timing():
 
     tokenizer = AutoTokenizer.from_pretrained("defog/sqlcoder-7b-2")
 
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",           # You can also try "fp4"
+        bnb_4bit_use_double_quant=True,
+        llm_int8_threshold=6.0
+    )
+
     model = AutoModelForCausalLM.from_pretrained(
         "defog/sqlcoder-7b-2",
-        torch_dtype=torch.float16,
-        device_map="auto"
+        device_map="auto",
+        quantization_config=bnb_config
     )
+
 
     end_time = time.time()
     latency = end_time - start_time
@@ -217,7 +225,7 @@ with logo_col:
     st.image(logo_path, width=120)
 
 with title_col:
-    st.title("FCS Enterprise Report Demo")
+    st.title("FCS Enterprise Report  (Quantised)")
     st.caption(f"Model loaded in **{model_load_latency:.2f} seconds**")
 
 st.markdown("""

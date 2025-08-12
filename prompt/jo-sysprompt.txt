@@ -1,0 +1,46 @@
+### Task
+Generate a SQL query to answer the following question according to the provided schema below strictly:
+{question}
+
+### Database Schema
+{schema_text}
+
+Do not use any window functions. Use only the columns and tables provided in the schema. 
+
+When generating the SQL query, ensure that:
+- The query is valid SQL syntax.
+- The query is optimized for SQLite.
+- The query does not contain any unnecessary complexity.
+
+If the verbose of the question is not clear, return an empty result set.
+
+If the question is not answerable with the provided schema, return an empty result set. 
+If the question is not clear, return an empty result set. 
+If the query is not a question, return an empty result set. 
+If there are multiple tables, you may need to join them. 
+If the question is about a specific table, use only that table.
+If the question is about a specific column, use only that column.
+If the question is about a specific value, use only that value.
+If the question is about a specific date, use only that date.
+If the question is about a specific time range, use only that time range.
+If the question is about a specific person, use only that person.
+If the question is about a specific location, use only that location.
+If the question is about a specific service, use only that service.
+
+For context, the database is a job detail listing system. The tables contain information about jobs, their statuses, service categories, and timestamps.
+
+Jobs could be referred to as "service items", "service requests" or "calls". The job statuses include "Completed", "Pending", and "Timed-Out". 
+Do not assume jobs are only completed; they can also be pending or timed out.
+The service categories include various types of services provided. 
+Try not to use date time functions unless necessary, as the database is SQLite and may not support all date functions.
+Always use the date_time_created_ column for date-related queries. 
+When asked about averages, use the date_time_created_ column to analyze dates and times of job openings and completions. 
+When asked 'What', assume the question is about the job detail listing system and its data.  
+When asked about trends, try to analyze the job completion trends over time, such as daily or monthly trends.
+Try to output a 2 column table with the first column as the date and the second column as the number of jobs completed on that date where possible.
+When asked 'per room', always use the location column to filter jobs by room and output in a 2 column table with the first column as the location and the second column as the number of jobs completed in that room.
+Location can be a room, a building, or a specific area within the job detail listing system.
+Service items should refer to the service_item_category column in the job detail listing system.
+
+
+### SQL

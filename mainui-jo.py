@@ -5,31 +5,32 @@ import pandas as pd
 import time
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from sql_fixes import apply_sql_fixes 
 
 import os
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Optional: Build .db from .sql file
-# ─────────────────────────────────────────────────────────────────────────────
-def build_db_from_sql(sql_file: str, db_file: str):
-    if not os.path.exists(db_file) and os.path.exists(sql_file):
-        with open(sql_file, 'r', encoding='utf-8') as f:
-            sql_script = f.read()
-        conn = sqlite3.connect(db_file)
-        try:
-            conn.executescript(sql_script)
-            print(f"✅ Built database '{db_file}' from '{sql_file}'")
-        except Exception as e:
-            print(f"❌ Failed to build DB: {e}")
-        finally:
-            conn.close()
+# # ─────────────────────────────────────────────────────────────────────────────
+# # Optional: Build .db from .sql file
+# # ─────────────────────────────────────────────────────────────────────────────
+# def build_db_from_sql(sql_file: str, db_file: str):
+#     if not os.path.exists(db_file) and os.path.exists(sql_file):
+#         with open(sql_file, 'r', encoding='utf-8') as f:
+#             sql_script = f.read()
+#         conn = sqlite3.connect(db_file)
+#         try:
+#             conn.executescript(sql_script)
+#             print(f"✅ Built database '{db_file}' from '{sql_file}'")
+#         except Exception as e:
+#             print(f"❌ Failed to build DB: {e}")
+#         finally:
+#             conn.close()
 
-# Path settings
-SQL_PATH = "job_detail_listing.sql"
-DB_PATH = "job_detail_listing.db"
+# # Path settings
+# SQL_PATH = "schemas/job_detail_listing.sql"
+# DB_PATH = "schemas/job_detail_listing.db"
 
-# Build database from .sql file if needed
-build_db_from_sql(SQL_PATH, DB_PATH)
+# # Build database from .sql file if needed
+# build_db_from_sql(SQL_PATH, DB_PATH)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Layout Setup
@@ -66,7 +67,7 @@ def load_model():
 
 tokenizer, model, model_latency = load_model()
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-conn = sqlite3.connect("job_detail_listing.db")
+conn = sqlite3.connect("schemas/job_detail_listing.db")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helper: prompt builder and SQL cleaner
@@ -82,56 +83,15 @@ def get_schema_prompt(conn, question):
         col_defs = [f"{col[1]} {col[2]}" for col in columns]
         schema.append(f"CREATE TABLE {table} ({', '.join(col_defs)});")
     schema_text = "\n".join(schema)
-    prompt = f"""
-### Task
-Generate a SQL query to answer the following question according to the provided schema below strictly:
-{question}
 
-### Database Schema
-{schema_text}
+    # Load system prompt from external file
+    with open("prompt/jo-sysprompt.txt", "r", encoding="utf-8") as f:
+        prompt_template = f.read()
 
-Do not use any window functions. Use only the columns and tables provided in the schema. 
-
-When generating the SQL query, ensure that:
-- The query is valid SQL syntax.
-- The query is optimized for SQLite.
-- The query does not contain any unnecessary complexity.
-
-If the verbose of the question is not clear, return an empty result set.
-
-If the question is not answerable with the provided schema, return an empty result set. 
-If the question is not clear, return an empty result set. 
-If the query is not a question, return an empty result set. 
-If there are multiple tables, you may need to join them. 
-If the question is about a specific table, use only that table.
-If the question is about a specific column, use only that column.
-If the question is about a specific value, use only that value.
-If the question is about a specific date, use only that date.
-If the question is about a specific time range, use only that time range.
-If the question is about a specific person, use only that person.
-If the question is about a specific location, use only that location.
-If the question is about a specific service, use only that service.
-
-For context, the database is a job detail listing system. The tables contain information about jobs, their statuses, service categories, and timestamps.
-
-Jobs could be referred to as "service items", "service requests" or "calls". The job statuses include "Completed", "Pending", and "Timed-Out". 
-Do not assume jobs are only completed; they can also be pending or timed out.
-The service categories include various types of services provided. 
-Try not to use date time functions unless necessary, as the database is SQLite and may not support all date functions.
-Always use the date_time_created_ column for date-related queries. 
-When asked about averages, use the date_time_created_ column to analyze dates and times of job openings and completions. 
-When asked 'What', assume the question is about the job detail listing system and its data.  
-When asked about trends, try to analyze the job completion trends over time, such as daily or monthly trends.
-Try to output a 2 column table with the first column as the date and the second column as the number of jobs completed on that date where possible.
-When asked 'per room', always use the location column to filter jobs by room and output in a 2 column table with the first column as the location and the second column as the number of jobs completed in that room.
-Location can be a room, a building, or a specific area within the job detail listing system.
-Service items should refer to the service_item_category column in the job detail listing system.
-
-
-### SQL
-"""
+    prompt = prompt_template.format(question=question, schema_text=schema_text)
     print(prompt)
     return prompt
+
 
 def clean_sql(raw_sql):
     for kw in ("SELECT", "WITH", "INSERT", "UPDATE", "DELETE"):
@@ -154,135 +114,11 @@ def nl_to_sql(question):
     raw = tokenizer.decode(outputs[0], skip_special_tokens=True)
     sql = clean_sql(raw)
 
-    import re
-
-    # Fix ILIKE → LOWER(...) LIKE
-    sql = re.sub(
-        r"(\w+(?:\.\w+)?)\s+ILIKE\s+'(.*?)'",
-        lambda m: f"LOWER({m.group(1)}) LIKE '%{m.group(2).lower()}%'",
-        sql,
-        flags=re.IGNORECASE
-    )
-
-    # Fix EXTRACT(YEAR FROM col)
-    sql = re.sub(
-        r"EXTRACT\s*\(\s*YEAR\s+FROM\s+([^)]+?)\s*\)",
-        r"CAST(strftime('%Y', \1) AS INTEGER)",
-        sql,
-        flags=re.IGNORECASE
-    )
-
-    # Fix EXTRACT(MONTH FROM col)
-    sql = re.sub(
-        r"EXTRACT\s*\(\s*MONTH\s+FROM\s+([^)]+?)\s*\)",
-        r"CAST(strftime('%m', \1) AS INTEGER)",
-        sql,
-        flags=re.IGNORECASE
-    )
-
-    # Fix EXTRACT(DAY FROM col)
-    sql = re.sub(
-        r"EXTRACT\s*\(\s*DAY\s+FROM\s+([^)]+?)\s*\)",
-        r"CAST(strftime('%d', \1) AS INTEGER)",
-        sql,
-        flags=re.IGNORECASE
-    )
-
-    # Fix EXTRACT(DOW FROM col)
-    sql = re.sub(
-        r"EXTRACT\s*\(\s*DOW\s+FROM\s+([^)]+?)\s*\)",
-        r"CAST(strftime('%w', \1) AS INTEGER)",
-        sql,
-        flags=re.IGNORECASE
-    )
-
-    # Fix EXTRACT(HOUR FROM col)
-    sql = re.sub(
-        r"EXTRACT\s*\(\s*HOUR\s+FROM\s+([^)]+?)\s*\)",
-        r"CAST(strftime('%H', \1) AS INTEGER)",
-        sql,
-        flags=re.IGNORECASE
-    )
-
-    # Fix EXTRACT(MINUTE FROM col)
-    sql = re.sub(
-        r"EXTRACT\s*\(\s*MINUTE\s+FROM\s+([^)]+?)\s*\)",
-        r"CAST(strftime('%M', \1) AS INTEGER)",
-        sql,
-        flags=re.IGNORECASE
-    )
-
-    # Fix PostgreSQL-style casting (col::TYPE) → CAST(col AS TYPE)
-    sql = re.sub(
-        r"(\w+(?:\.\w+)?)::(\w+)",
-        r"CAST(\1 AS \2)",
-        sql
-    )
-
-    # Fix date_trunc('day', to_timestamp(col)) → date(substr(col, 1, 10))
-    sql = re.sub(
-        r"date_trunc\s*\(\s*'day'\s*,\s*to_timestamp\s*\(([^)]+)\)\s*\)",
-        r"date(substr(\1, 1, 10))",
-        sql,
-        flags=re.IGNORECASE
-    )
-
-    # Fix strftime('%X', to_timestamp(col)) → strftime('%X', col)
-    sql = re.sub(
-        r"strftime\(\s*'(%[YmdwHMS])'\s*,\s*to_timestamp\(([^)]+)\)\s*\)",
-        r"strftime('\1', \2)",
-        sql,
-        flags=re.IGNORECASE
-    )
-
-    # Final fallback: remove remaining to_timestamp(col) → col
-    sql = re.sub(
-        r"to_timestamp\s*\(([^)]+)\)",
-        r"\1",
-        sql,
-        flags=re.IGNORECASE
-    )
-
-    # Fix generic date_trunc('day', col) → date(substr(col, 1, 10))
-    sql = re.sub(
-        r"date_trunc\s*\(\s*'day'\s*,\s*([^)]+?)\s*\)",
-        r"date(substr(\1, 1, 10))",
-        sql,
-        flags=re.IGNORECASE
-    )
-
-    # Fix date_trunc('month', col)
-    sql = re.sub(
-        r"date_trunc\s*\(\s*'month'\s*,\s*([^)]+?)\s*\)",
-        r"date(substr(\1, 1, 7) || '-01')",
-        sql,
-        flags=re.IGNORECASE
-    )
-
-    # Fix date_part('year', col)
-    sql = re.sub(
-        r"date_part\s*\(\s*'year'\s*,\s*([^)]+?)\s*\)",
-        r"CAST(strftime('%Y', \1) AS INTEGER)",
-        sql,
-        flags=re.IGNORECASE
-    )
-
-    # Fix INTERVAL 'N unit' → date('now', '-N unit') or datetime(...)
-    sql = re.sub(
-        r"(CURRENT_DATE|CURRENT_TIMESTAMP)\s*-\s*INTERVAL\s*'(\d+)\s+(day|days|week|weeks|month|months|year|years)'",
-        lambda m: f"{'date' if m.group(1).upper() == 'CURRENT_DATE' else 'datetime'}('now', '-{m.group(2)} {m.group(3)}')",
-        sql,
-        flags=re.IGNORECASE
-    )
-
-    # Fix datetime subtraction: col1 - col2 → julianday(col1) - julianday(col2)
-    sql = re.sub(
-        r"\b([a-zA-Z_][\w\.]*)\s*-\s*([a-zA-Z_][\w\.]*)\b",
-        r"julianday(\1) - julianday(\2)",
-        sql
-    )
+    # Apply all known fixes
+    sql = apply_sql_fixes(sql)
 
     return sql
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Title and query box
